@@ -7,8 +7,10 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreMessage;
 use App\Models\User;
 use App\Models\Message;
+use App\Models\PublicNotice;
 use App\Http\Resources\MessageResource;
 use App\Http\Resources\PaginateResource;
+use App\Http\Resources\PublicNoticeResource;
 
 class MessageController extends Controller
 {
@@ -19,9 +21,31 @@ class MessageController extends Controller
 
     public function store(StoreMessage $form)
     {
-        $message = $form->generateMessage();
+        $message = $form->userSend();
+        if(!$message){abort(495);}
+        $message->load('body','poster','receiver');
         return response()->success([
             'message' => new MessageResource($message),
+        ]);
+    }
+
+    public function groupmessage(StoreMessage $form)
+    {
+        $messages = $form->adminSend();
+        if(!$messages){abort(495);}
+        $messages->load('body','poster','receiver')->except('seen');
+        return response()->success([
+            'messages' => MessageResource::collection($messages),
+        ]);
+    }
+
+    public function publicnotice(StoreMessage $form)
+    {
+        $public_notice = $form->generatePublicNotice();
+        if(!$public_notice){abort(495);}
+        $public_notice->load('poster');
+        return response()->success([
+            'public_notice' => new PublicNoticeResource($public_notice),
         ]);
     }
 

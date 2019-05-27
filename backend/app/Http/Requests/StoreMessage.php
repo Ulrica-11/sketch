@@ -6,51 +6,134 @@ use App\Http\Requests\FormRequest;
 use App\Models\Message;
 use App\Models\User;
 use App\Models\MessageBody;
+use App\Models\PublicNotice;
 use DB;
+use Carbon\Carbon;
 
 class StoreMessage extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
-     *
-     * @return bool
-     */
+    * Determine if the user is authorized to make this request.
+    *
+    * @return bool
+    */
     public function authorize()
     {
-        $user = auth('api')->user();
-        $sendTo = User::find(Request('sendTo'));
-        return auth('api')->check()
-            && $user->info->message_limit > 0 // 用户仍然有信息余量
-            && $sendTo //千万别忘了检查这个被发信人确实合法存在
-            && !$sendTo->info->no_stranger_message // 对方允许接收陌生用户信息
-            && $user->id != $sendTo->id ;// 并不是自己给自己发信息
+        return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array
-     */
+    * Get the validation rules that apply to the request.
+    *
+    * @return array
+    */
     public function rules()
     {
         return [
+            'sendTo' => 'numeric',
+            'sendTos' => 'array',
             'body' => 'required|string|max:20000',
         ];
     }
 
-    public function generateMessage()
+    public function userSend()
     {
-        $message_data['poster_id'] = auth('api')->id();
-        $message_data['receiver_id'] = Request('sendTo');
-        $message = DB::transaction(function() use($message_data) {
-            $message_body = MessageBody::create(['body' => request('body')]);
-            $message_data['message_body_id'] = $message_body->id;
-            $message = Message::create($message_data);
+        $this->validateSendTo(Request('sendTo'), auth('api')->id());
+        $this->isDuplicateMessage(Request('body'), auth('api')->id());
+        $messages = $this->generateMessages([Request('sendTo')], Request('body'));
+        return $messages[0];
+    }
+
+    public function adminSend()
+    {
+        $this->validateSendTos(Request('sendTos'), auth('api')->id());
+        $this->isDuplicateMessage(Request('body'), auth('api')->id());
+        return $messages = $this->generateMessages(Request('sendTos'), Request('body'));
+    }
+
+    public function generateMessages($sendTos, $body)
+    {
+        $messages = DB::transaction(function() use($sendTos, $body){
+            $messageBodyId = $this->generateMessageBody($body);
+            $messages = $this->generateMessageRecords($sendTos, $messageBodyId);
+
             if (!auth('api')->user()->isAdmin()){
                 auth('api')->user()->info->decrement('message_limit');
             }
-            return $message;
+            return $messages;
         });
-        return $message;
+
+        return $messages;
+    }
+
+    public function generateMessageBody($body)
+    {
+        $messageBody = MessageBody::create(['body' => $body]);
+        return $messageBody->id;
+    }
+
+    public function generateMessageRecords($sendTos, $bodyId)
+    {
+        $created_at = Carbon::now();
+        foreach ($sendTos as $sendTo) {
+            $message_datas[] = [
+                'poster_id' => auth('api')->id(),
+                'receiver_id' => $sendTo,
+                'message_body_id' => $bodyId,
+                'created_at'=> $created_at,
+            ];
+        }
+        Message::insert($message_datas);
+        return $messages = Message::where('message_body_id', $bodyId)->get();
+    }
+
+    public function generatePublicNotice()
+    {
+        if(!auth('api')->user()->isAdmin()){abort(403);}
+
+        $notice_data['notice_body'] = Request('body');
+        $notice_data['user_id'] = auth('api')->id();
+        $public_notice = DB::transaction(function() use($notice_data) {
+            $public_notice = PublicNotice::create($notice_data);
+            DB::table('users')->increment('unread_reminders');
+            DB::table('system_variables')->update(['latest_public_notice_id' => $public_notice->id]);
+            return $public_notice;
+        });
+
+        return $public_notice;
+    }
+
+    private function validateSendTos($sendTos, $selfId)
+    {
+        if(!auth('api')->user()->isAdmin()){abort(403);}
+        $newSendTos = User::whereIn('id', $sendTos)
+        ->where('id', '<>', $selfId)
+        ->whereNull('deleted_at')
+        ->select('id')
+        ->get()
+        ->pluck('id')
+        ->toArray();
+        $unavailable = array_diff($sendTos, $newSendTos);//未来可以考虑将这个信息返回？也或许不需要……
+        if($unavailable){abort(404,json_encode($unavailable));}
+    }
+
+    private function validateSendTo($sendToId, $selfId)
+    {
+        if((!auth('api')->user()->isAdmin())
+            &&(auth('api')->user()->info->message_limit <= 0)){
+                abort(403,'message limit violation');
+        }
+        $sendToUser = User::find($sendToId);
+        if(!$sendToUser){abort(404);}
+        if($selfId === $sendToId){abort(403,'cannot send message to oneself');}
+        if($sendToUser->info->no_stranger_message){abort(403,'receiver refuse to get message');}
+    }
+
+    private function isDuplicateMessage($body, $selfId)
+    {
+        $last_message = Message::where('poster_id', $selfId)
+        ->orderBy('created_at', 'desc')
+        ->first();
+        if(!empty($last_message) && (strcmp($last_message->body->body, $body) === 0)){abort(403, 'cannot send duplicate message');}
     }
 }

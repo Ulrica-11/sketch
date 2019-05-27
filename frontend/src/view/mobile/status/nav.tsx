@@ -1,11 +1,11 @@
-import { TopMenu } from "../../components/common";
 import * as React from 'react';
+import { RouteMenu } from "../../components/common/route-menu";
 
 export function StatusNav () {
-    return <TopMenu
-        items={[
-            {to:'/status/collection', label: '关注'},
-            {to:'/status/all', label: '全站'},
-        ]}
-    />;
+  return <RouteMenu
+    items={[
+      {to:'/status/collection', label: '关注'},
+      {to:'/status/all', label: '全站'},
+    ]}
+  />;
 }

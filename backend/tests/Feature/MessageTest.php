@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Tests\TestCase;
 use DB;
+use App\Models\PublicNotice;
 
 class MessageTest extends TestCase
 {
@@ -107,6 +108,179 @@ class MessageTest extends TestCase
         $body = 'send this message';
 
         $response = $this->post('/api/message', ['sendTo' => $poster->id, 'body' => $body])->assertStatus(403);
+    }
+
+    /** @test */
+    public function user_can_not_send_duplicate_message()//登陆用户可发私信
+    {
+        $poster = $this->create_sender(2);
+        $receiver = $this->create_receiver(false);
+        $this->actingAs($poster, 'api');
+        $body = 'send this message';
+        $response = $this->post('/api/message', ['sendTo' => $receiver->id, 'body' => $body])
+        ->assertStatus(200);
+        $response2 = $this->post('/api/message', ['sendTo' => $receiver->id, 'body' => $body])
+        ->assertStatus(403);
+    }
+
+    /** @test */
+    public function admin_can_send_mass_messages()//管理员可以群发私信
+    {
+        $admin = $this->create_sender(1);
+        DB::table('role_user')->insert([
+            'user_id' => $admin->id,
+            'role' => 'admin',
+        ]);
+        $this->actingAs($admin, 'api');
+
+        $receivers_id = [$this->create_receiver(false)->id, $this->create_receiver(false)->id];
+        $body = 'send this message';
+
+        $response = $this->post('/api/groupmessage', ['sendTos' => $receivers_id, 'body' => $body])
+        ->assertStatus(200)
+        ->assertJsonStructure([
+            'code',
+            'data' => [
+                'messages' => [[
+                    'type',
+                    'id',
+                    'attributes' => [
+                        'poster_id',
+                        'receiver_id',
+                        'message_body',
+                        'created_at',
+                    ],
+                ]]
+            ],
+        ])
+        ->assertJson([
+            'code' => 200,
+            'data' => [
+                'messages' => [[
+                    'type' => 'message',
+                    'attributes' => [
+                        'poster_id' => $admin->id,
+                        'receiver_id' => $receivers_id[0],
+                        'message_body' => [
+                            'body' => $body,
+                        ],
+                    ],
+                ],[
+                    'type' => 'message',
+                    'attributes' => [
+                        'poster_id' => $admin->id,
+                        'receiver_id' => $receivers_id[1],
+                        'message_body' => [
+                            'body' => $body,
+                        ],
+                    ],
+                ]]
+            ],
+        ]);
+    }
+
+    /** @test */
+    public function admin_can_not_send_mass_messages_to_inexistent_user()//管理员不可以给不存在的用户发私信
+    {
+        $admin = $this->create_sender(1);
+        DB::table('role_user')->insert([
+            'user_id' => $admin->id,
+            'role' => 'admin',
+        ]);
+        $this->actingAs($admin, 'api');
+
+        $receivers_id = [99999, $this->create_receiver(false)->id];
+        $body = 'send this message';
+
+        $response = $this->post('/api/groupmessage', ['sendTos' => $receivers_id, 'body' => $body])
+        ->assertStatus(404);
+    }
+
+    /** @test */
+    public function user_can_not_send_mass_messages()//普通用户不可以群发私信
+    {
+        $user = $this->create_sender(2);
+        $this->actingAs($user, 'api');
+
+        $receivers_id = [$this->create_receiver(false)->id, $this->create_receiver(false)->id];
+        $body = 'send this message';
+
+        $response = $this->post('/api/groupmessage', ['sendTos' => $receivers_id, 'body' => $body])
+        ->assertStatus(403);
+    }
+
+    /** @test */
+    public function guest_can_not_send_mass_messages()//游客不可以群发私信
+    {
+        $receivers_id = [$this->create_receiver(false)->id, $this->create_receiver(false)->id];
+        $body = 'send this message';
+
+        $response = $this->post('/api/groupmessage', ['sendTos' => $receivers_id, 'body' => $body])
+        ->assertStatus(401);
+    }
+
+    /** @test */
+    public function admin_can_send_public_notice() // 管理员可发系统消息
+    {
+        $admin = $this->create_sender(1);
+        DB::table('role_user')->insert([
+            'user_id' => $admin->id,
+            'role' => 'admin',
+        ]);
+        $this->actingAs($admin, 'api');
+        $body = 'send this public notice';
+        $unread_reminders = (int)$admin->unread_reminders;
+
+        $response = $this->post('/api/publicnotice', ['body' => $body])
+        ->assertStatus(200)
+        ->assertJsonStructure([
+            'code',
+            'data' => [
+                'public_notice' => [
+                    'type',
+                    'id',
+                    'attributes' => [
+                        'user_id',
+                        'notice_body',
+                        'created_at',
+                    ],
+                ],
+            ],
+        ])
+        ->assertJson([
+            'code' => 200,
+            'data' => [
+                'public_notice' => [
+                    'type' => 'public_notice',
+                    'attributes' => [
+                        'user_id' => $admin->id,
+                        'notice_body' => $body,
+                    ],
+                ],
+            ],
+        ]);
+
+        $public_notice_id = PublicNotice::orderBy('created_at', 'desc')->first()->id;
+        $latest_public_notice_id = DB::table('system_variables')->first()->latest_public_notice_id;
+        $this->assertEquals($public_notice_id, $latest_public_notice_id);
+        $this->assertEquals($unread_reminders+1, (int)$admin->fresh()->unread_reminders);
+    }
+
+    /** @test */
+    public function user_can_not_send_public_notice() // 用户不可发系统消息
+    {
+        $user = $this->create_sender(1);
+        $this->actingAs($user, 'api');
+        $body = 'send this public notice';
+        $response = $this->post('/api/publicnotice', ['body' => $body])
+        ->assertStatus(403);
+    }
+
+    public function guest_can_not_send_public_notice() // 游客不可发系统消息
+    {
+        $body = 'send this public notice';
+        $response = $this->post('/api/publicnotice', ['body' => $body])
+        ->assertStatus(403);
     }
 
     /** @test */
@@ -300,4 +474,6 @@ class MessageTest extends TestCase
 
         $response = $this->get('/api/user/'.$user->id.'/message?withStyle=dialogue&chatWith='.$chatWith->id)->assertStatus(401);
     }
+
+    // TODO: 写groupmessage的test
 }
